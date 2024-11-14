@@ -32,12 +32,11 @@ def infer(args):
         chat_template="llama-3.1",
     )
 
-    # # Load data
-    # df = pd.read_csv(args.data_set)
-
     # Load Spider dataset
     splits = {'train': 'spider/train-00000-of-00001.parquet', 'validation': 'spider/validation-00000-of-00001.parquet'}
     df = pd.read_parquet("hf://datasets/xlangai/spider/" + splits["validation"])
+
+    predicted_ls = []
 
     for idx, row in tqdm(df.iterrows(), total=df.shape[0], desc="Processing"):
         sentence = row['question']
@@ -75,9 +74,15 @@ def infer(args):
             real_output = ""
             print("Error when parsing real output")
 
+        predicted_ls.append(real_output)
+
         if args.show_infer:
             print(f"Input: {sentence}\n"
                   f"Generated: {real_output}\n")
+
+    with open(args.save_dir, "w") as file:
+        for line in predicted_ls:
+            file.write(line + "\n")
 
 
 if __name__ == '__main__':
@@ -86,6 +91,14 @@ if __name__ == '__main__':
     parser.add_argument(
         '--model_name',
         '-m',
+        type=str,
+        required=True,
+        help='Path or name to fine-tuned model',
+    )
+
+    parser.add_argument(
+        '--save_dir',
+        '-sd',
         type=str,
         required=True,
         help='Path or name to fine-tuned model',
