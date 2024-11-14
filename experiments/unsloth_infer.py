@@ -72,7 +72,7 @@ def infer(args):
             real_output = output_text.group(1).strip()
         else:
             real_output = ""
-            print("Error when parsing real output")
+            print(f"Error when parsing real output from {inference_output[0]}")
 
         predicted_ls.append(real_output)
 
