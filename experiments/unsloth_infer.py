@@ -89,7 +89,7 @@ def infer(args):
 
         outputs = model.generate(
             input_ids=inputs,
-            max_new_tokens=64,
+            max_new_tokens=args.max_seq_length,
             use_cache=True,
             temperature=1.5,
             min_p=0.1,
