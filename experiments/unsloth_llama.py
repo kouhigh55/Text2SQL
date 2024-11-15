@@ -84,11 +84,6 @@ def main(args):
 
     hf_dataset = Dataset.from_list(formatted_data)
 
-    print("data looks like:")
-    print(hf_dataset[5])
-
-    return
-
     # Format training data with system prompt template
     def formatting_prompts_func(examples):
         conversions = examples["conversations"]
