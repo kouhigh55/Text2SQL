@@ -9,18 +9,56 @@ import re
 import sys
 
 import pandas as pd
+from datasets import Dataset
+from torch.utils.data import DataLoader
 
 sys.path.append(os.path.split(sys.path[0])[0])
 
 from unsloth import FastLanguageModel, get_chat_template
 from tqdm import tqdm
 
-prompt_base = "Turn this question into standard SQL language: "
+prompt_base = """
+Turn this natural language query into standard SQL language.
+query: {ques},
+table_schema: {sche},
+SQL result:
+"""
+
+
+def construct_prompt(question, schema):
+    return prompt_base.format(ques=question, sche=schema)
+
+
+class SpiderDataset(Dataset):
+    def __init__(self, data_frame):
+        self.data_frame = data_frame
+
+    def __len__(self):
+        return len(self.data_frame)
+
+    def __getitem__(self, idx):
+        row = self.data_frame.iloc[idx]
+        schema = row['db_id']
+        sentence = row['question']
+        return construct_prompt(sentence, schema)
+
+
+def collate_fn(batch, tokenizer):
+    # Prepare messages for input
+    messages = [{"role": "user", "content": sentence} for sentence in batch]
+    inputs = tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,  # Must add for generation
+        return_tensors="pt",
+    )
+    return inputs
 
 
 def infer(args):
+    # Load model and tokenizer
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model_name,  # YOUR MODEL YOU USED FOR TRAINING
+        model_name=args.model_name,
         max_seq_length=args.max_seq_length,
         dtype=None,
         load_in_4bit=args.load_in_4bit,
@@ -36,22 +74,18 @@ def infer(args):
     splits = {'train': 'spider/train-00000-of-00001.parquet', 'validation': 'spider/validation-00000-of-00001.parquet'}
     df = pd.read_parquet("hf://datasets/xlangai/spider/" + splits["validation"])
 
+    dataset = SpiderDataset(df)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=lambda batch: collate_fn(batch, tokenizer)
+    )
+
     predicted_ls = []
 
-    for idx, row in tqdm(df.iterrows(), total=df.shape[0], desc="Processing"):
-        sentence = row['question']
-
-        # Prepare messages for input
-        messages = [
-            {"role": "user", "content": f"{prompt_base} {sentence}"},
-        ]
-
-        inputs = tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,  # Must add for generation
-            return_tensors="pt",
-        ).to("cuda")
+    for inputs in tqdm(dataloader, desc="Processing Batches"):
+        inputs = inputs.to("cuda")
 
         outputs = model.generate(
             input_ids=inputs,
@@ -61,28 +95,31 @@ def infer(args):
             min_p=0.1,
         )
 
-        inference_output = tokenizer.batch_decode(outputs)
-        output_text = re.search(
-            r'<\|start_header_id\|>assistant<\|end_header_id\|>\n\n(.*?)<\|eot_id\|>',
-            inference_output[0],
-            re.DOTALL,
-        )
+        inference_outputs = tokenizer.batch_decode(outputs)
 
-        if output_text:
-            real_output = output_text.group(1).strip()
-        else:
-            real_output = ""
-            print(f"Error when parsing real output from {inference_output[0]}")
+        for inference_output in inference_outputs:
+            output_text = re.search(
+                r'<\|start_header_id\|>assistant<\|end_header_id\|>\n\n(.*?)<\|eot_id\|>',
+                inference_output,
+                re.DOTALL,
+            )
 
-        predicted_ls.append(real_output)
+            if output_text:
+                real_output = output_text.group(1).strip()
+            else:
+                real_output = ""
+                print(f"Error when parsing real output from {inference_output}")
 
-        if args.show_infer:
-            print(f"Input: {sentence}\n"
-                  f"Generated: {real_output}\n")
+            predicted_ls.append(real_output)
 
+    # Save the outputs
     with open(args.save_dir, "w") as file:
         for line in predicted_ls:
             file.write(line + "\n")
+
+    if args.show_infer:
+        for input_sentence, output_sentence in zip(dataset, predicted_ls):
+            print(f"Input: {input_sentence}\nGenerated: {output_sentence}\n")
 
 
 if __name__ == '__main__':
