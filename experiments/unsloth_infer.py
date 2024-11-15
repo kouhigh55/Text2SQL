@@ -30,17 +30,18 @@ def construct_prompt(question, schema):
 
 
 class SpiderDataset(Dataset):
-    def __init__(self, data_frame):
+    def __init__(self, data_frame, schema):
         self.data_frame = data_frame
+        self.schema = schema
 
     def __len__(self):
         return len(self.data_frame)
 
     def __getitem__(self, idx):
         row = self.data_frame.iloc[idx]
-        schema = row['db_id']
+        sch = self.schema[row['db_id']]
         sentence = row['question']
-        return construct_prompt(sentence, schema)
+        return construct_prompt(sentence, sch)
 
 
 def collate_fn(batch, tokenizer):
@@ -65,6 +66,12 @@ def infer(args):
     )
     FastLanguageModel.for_inference(model)
 
+    # Load Spider schema
+    with open(args.schema, "r", encoding="utf-8") as file:
+        json_data = json.load(file)
+
+    schema_dict = {entry["db_id"]: entry["Schema (values (type))"] for entry in json_data}
+
     tokenizer = get_chat_template(
         tokenizer,
         chat_template="llama-3.1",
@@ -74,7 +81,7 @@ def infer(args):
     splits = {'train': 'spider/train-00000-of-00001.parquet', 'validation': 'spider/validation-00000-of-00001.parquet'}
     df = pd.read_parquet("hf://datasets/xlangai/spider/" + splits["validation"])
 
-    dataset = SpiderDataset(df)
+    dataset = SpiderDataset(df, schema_dict)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -139,6 +146,15 @@ if __name__ == '__main__':
         type=str,
         required=True,
         help='Path or name to fine-tuned model',
+    )
+
+    parser.add_argument(
+        '--schema',
+        '-sc',
+        type=str,
+        required=False,
+        default='./home/data/schema.json',
+        help='Path or name to pre-trained model',
     )
 
     parser.add_argument('--max_seq_length', type=int, required=False, default=512)
