@@ -15,6 +15,7 @@ sys.path.append(os.path.split(sys.path[0])[0])
 
 from unsloth import FastLanguageModel, get_chat_template
 from tqdm import tqdm
+from utils import get_sqls, process_duplication
 
 prompt_base = """
 Turn this natural language query into standard SQL language.
@@ -73,30 +74,65 @@ def infer(args):
             use_cache=True,
             temperature=1.5,
             min_p=0.1,
+            num_return_sequences=args.self_consistent_n
         )
+        if args.self_consistent_n == 1:
+            inference_output = tokenizer.batch_decode(outputs)
+            real_output = extract_from_template(inference_output[0])
 
-        inference_output = tokenizer.batch_decode(outputs)
-        output_text = re.search(
-            r'<\|start_header_id\|>assistant<\|end_header_id\|>\n\n(.*?)<\|eot_id\|>',
-            inference_output[0],
-            re.DOTALL,
-        )
+            predicted_ls.append(real_output)
 
-        if output_text:
-            real_output = output_text.group(1).strip()
+            if args.show_infer:
+                print(f"Input: {messages}\n"
+                      f"Generated: {real_output}\n")
         else:
-            real_output = ""
-            print(f"Error when parsing real output from {inference_output[0]}")
-
-        predicted_ls.append(real_output)
-
-        if args.show_infer:
-            print(f"Input: {messages}\n"
-                  f"Generated: {real_output}\n")
+            inference_outputs = tokenizer.batch_decode(outputs)
+            list_output_text = [extract_from_template(output) for output in inference_outputs]
+            processed_sqls = []
+            for sql in list_output_text:
+                sql = " ".join(sql.replace("\n", " ").split())
+                sql = process_duplication(sql)
+                if sql.startswith("SELECT"):
+                    pass
+                elif sql.startswith(" "):
+                    sql = "SELECT" + sql
+                else:
+                    sql = "SELECT " + sql
+                processed_sqls.append(sql)
+            result = {
+                'db_id': row['db_id'],
+                'p_sqls': processed_sqls
+            }
+            final_sqls = get_sqls(
+                results=[result],
+                select_number=args.self_consistent_n,
+                db_dir=args.db_dir
+            )
+            predicted_ls.append(final_sqls[0])
+            if args.show_infer:
+                processed_sqls_str = "\n\t".join(processed_sqls)
+                print(f"Input: {messages}\n"
+                      f"select from:\n\t{processed_sqls_str}\n"
+                      f"Generated:\n\t{final_sqls[0]}\n")
 
     with open(os.path.join(args.save_dir), "w") as file:
         for line in predicted_ls:
             file.write(line + "\n")
+
+
+def extract_from_template(inference_output):
+    output_text = re.search(
+        r'<\|start_header_id\|>assistant<\|end_header_id\|>\n\n(.*?)<\|eot_id\|>',
+        inference_output,
+        re.DOTALL,
+    )
+    if output_text:
+        real_output = output_text.group(1).strip()
+    else:
+        real_output = ""
+        print(f"Error when parsing real output from {inference_output[0]}")
+    return real_output
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -131,6 +167,9 @@ if __name__ == '__main__':
     parser.add_argument('--load_in_4bit', type=bool, required=False, default=True,
                         help='Use 4bit quantization to reduce memory usage. Can be False')
     parser.add_argument('--show_infer', type=bool, required=False, default=False)
+    parser.add_argument('--batch_size', type=int, required=False, default=1)
+    parser.add_argument('--self_consistent_n', type=int, required=False, default=1)
+    parser.add_argument('--db_dir', type=str, required=False, default='./home/data/spider_data/test_database')
 
     args = parser.parse_args()
     infer(args)
