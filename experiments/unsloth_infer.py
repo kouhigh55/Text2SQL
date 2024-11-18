@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import json
+import torch
 
 import pandas as pd
 
@@ -30,6 +31,9 @@ def construct_prompt(question, schema):
 
 
 def infer(args):
+
+    torch.manual_seed(args.seed)
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.model_name,  # YOUR MODEL YOU USED FOR TRAINING
         max_seq_length=args.max_seq_length,
@@ -161,6 +165,16 @@ if __name__ == '__main__':
         required=False,
         default='./home/data/schema.json',
         help='Path or name to pre-trained model',
+    )
+
+    # Torch.manual_seed(3407) is all you need
+    parser.add_argument(
+        '--seed',
+        '-s',
+        type=int,
+        required=False,
+        default=3407,
+        help='Random seed for reproducibility',
     )
 
     parser.add_argument('--max_seq_length', type=int, required=False, default=512)
