@@ -11,13 +11,23 @@ from transformers import TrainingArguments, DataCollatorForSeq2Seq
 import argparse
 import os
 import pandas as pd
+import json
 
 os.environ['HF_HOME'] = './local/HF_cache'
 
 TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj",
                   "gate_proj", "up_proj", "down_proj", ]
 
-prompt_base = "Turn this question into standard SQL language: "
+prompt_base = """
+Turn this natural language query into standard SQL language.
+query: {ques},
+table_schema: {sche},
+SQL result:
+"""
+
+
+def construct_prompt(question, schema):
+    return prompt_base.format(ques=question, sche=schema)
 
 
 def main(args):
@@ -47,11 +57,17 @@ def main(args):
         chat_template="llama-3.1",
     )
 
+    # Load Spider schema
+    with open(args.schema, "r", encoding="utf-8") as file:
+        json_data = json.load(file)
+
+    schema_dict = {entry["db_id"]: entry["Schema (values (type))"] for entry in json_data}
+
     # Load Spider dataset
     splits = {'train': 'spider/train-00000-of-00001.parquet', 'validation': 'spider/validation-00000-of-00001.parquet'}
     df = pd.read_parquet("hf://datasets/xlangai/spider/" + splits["train"])
 
-    df['prompt'] = df['question'].apply(lambda x: f"{prompt_base} '{x}'")
+    df['prompt'] = df.apply(lambda row: construct_prompt(row['question'], schema_dict[row['db_id']]), axis=1)
     df['label'] = df['query']
 
     # Compose train data
@@ -112,7 +128,7 @@ def main(args):
     )
 
     print("Start training")
-    trainer_stats = trainer.train()
+    trainer.train()
 
     model_save_path = os.path.join(args.save_dir, args.model_name.split("/")[-1])
     print(f"Model saved at {model_save_path}")
@@ -186,6 +202,15 @@ if __name__ == '__main__':
         required=False,
         default=2,
         help='Epoch number',
+    )
+
+    parser.add_argument(
+        '--schema',
+        '-sc',
+        type=str,
+        required=False,
+        default='./home/data/schema.json',
+        help='Path or name to pre-trained model',
     )
 
     parser.add_argument('--max_seq_length', type=int, required=False, default=512)
