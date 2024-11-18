@@ -10,8 +10,6 @@ import sys
 import json
 
 import pandas as pd
-from datasets import Dataset
-from torch.utils.data import DataLoader
 
 sys.path.append(os.path.split(sys.path[0])[0])
 
@@ -30,42 +28,19 @@ def construct_prompt(question, schema):
     return prompt_base.format(ques=question, sche=schema)
 
 
-class SpiderDataset(Dataset):
-    def __init__(self, data_frame, schema):
-        self.data_frame = data_frame
-        self.schema = schema
-
-    def __len__(self):
-        return len(self.data_frame)
-
-    def __getitem__(self, idx):
-        row = self.data_frame.iloc[idx]
-        sch = self.schema[row['db_id']]
-        sentence = row['question']
-        return construct_prompt(sentence, sch)
-
-
-def collate_fn(batch, tokenizer):
-    # Prepare messages for input
-    messages = [{"role": "user", "content": sentence} for sentence in batch]
-    inputs = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,  # Must add for generation
-        return_tensors="pt",
-    )
-    return inputs
-
-
 def infer(args):
-    # Load model and tokenizer
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model_name,
+        model_name=args.model_name,  # YOUR MODEL YOU USED FOR TRAINING
         max_seq_length=args.max_seq_length,
         dtype=None,
         load_in_4bit=args.load_in_4bit,
     )
     FastLanguageModel.for_inference(model)
+
+    tokenizer = get_chat_template(
+        tokenizer,
+        chat_template="llama-3.1",
+    )
 
     # Load Spider schema
     with open(args.schema, "r", encoding="utf-8") as file:
@@ -73,27 +48,24 @@ def infer(args):
 
     schema_dict = {entry["db_id"]: entry["Schema (values (type))"] for entry in json_data}
 
-    tokenizer = get_chat_template(
-        tokenizer,
-        chat_template="llama-3.1",
-    )
-
     # Load Spider dataset
     splits = {'train': 'spider/train-00000-of-00001.parquet', 'validation': 'spider/validation-00000-of-00001.parquet'}
     df = pd.read_parquet("hf://datasets/xlangai/spider/" + splits["validation"])
 
-    dataset = SpiderDataset(df, schema_dict)
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=lambda batch: collate_fn(batch, tokenizer)
-    )
-
     predicted_ls = []
 
-    for inputs in tqdm(dataloader, desc="Processing Batches"):
-        inputs = inputs.to("cuda")
+    for idx, row in tqdm(df.iterrows(), total=df.shape[0], desc="Processing"):
+        # Prepare messages for input
+        messages = [
+            {"role": "user", "content": construct_prompt(row['question'], schema_dict[row['db_id']]),},
+        ]
+
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,  # Must add for generation
+            return_tensors="pt",
+        ).to("cuda")
 
         outputs = model.generate(
             input_ids=inputs,
@@ -103,32 +75,28 @@ def infer(args):
             min_p=0.1,
         )
 
-        inference_outputs = tokenizer.batch_decode(outputs)
+        inference_output = tokenizer.batch_decode(outputs)
+        output_text = re.search(
+            r'<\|start_header_id\|>assistant<\|end_header_id\|>\n\n(.*?)<\|eot_id\|>',
+            inference_output[0],
+            re.DOTALL,
+        )
 
-        for inference_output in inference_outputs:
-            output_text = re.search(
-                r'<\|start_header_id\|>assistant<\|end_header_id\|>\n\n(.*?)<\|eot_id\|>',
-                inference_output,
-                re.DOTALL,
-            )
+        if output_text:
+            real_output = output_text.group(1).strip()
+        else:
+            real_output = ""
+            print(f"Error when parsing real output from {inference_output[0]}")
 
-            if output_text:
-                real_output = output_text.group(1).strip()
-            else:
-                real_output = ""
-                print(f"Error when parsing real output from {inference_output}")
+        predicted_ls.append(real_output)
 
-            predicted_ls.append(real_output)
+        if args.show_infer:
+            print(f"Input: {messages}\n"
+                  f"Generated: {real_output}\n")
 
-    # Save the outputs
-    with open(args.save_dir, "w") as file:
+    with open(os.path.join(args.save_dir), "w") as file:
         for line in predicted_ls:
             file.write(line + "\n")
-
-    if args.show_infer:
-        for input_sentence, output_sentence in zip(dataset, predicted_ls):
-            print(f"Input: {input_sentence}\nGenerated: {output_sentence}\n")
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -145,7 +113,8 @@ if __name__ == '__main__':
         '--save_dir',
         '-sd',
         type=str,
-        required=True,
+        required=False,
+        default='./home/output/results.txt',
         help='Path or name to fine-tuned model',
     )
 
