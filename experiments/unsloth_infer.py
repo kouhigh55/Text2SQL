@@ -56,6 +56,7 @@ def infer(args):
     # Load Spider dataset
     splits = {'train': 'spider/train-00000-of-00001.parquet', 'validation': 'spider/validation-00000-of-00001.parquet'}
     df = pd.read_parquet("hf://datasets/xlangai/spider/" + splits["validation"])
+    df = df.iloc[args.start_offset:]
 
     predicted_ls = []
 
@@ -118,10 +119,19 @@ def infer(args):
                 print(f"Input: {messages}\n"
                       f"select from:\n\t{processed_sqls_str}\n"
                       f"Generated:\n\t{final_sqls[0]}\n")
+        if args.save_segment_len != 0 and len(predicted_ls) == args.save_segment_len:
+            save_predicted(args, predicted_ls)
+            predicted_ls = []
+    save_predicted(args, predicted_ls)
 
-    with open(os.path.join(args.save_dir), "w") as file:
+
+def save_predicted(args, predicted_ls):
+    with open(os.path.join(args.save_dir), "a") as file:
+        # move to the tail
+        file.seek(0, 2)
         for line in predicted_ls:
             file.write(line + "\n")
+    print("saved..")
 
 
 def extract_from_template(inference_output):
@@ -184,6 +194,12 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, required=False, default=1)
     parser.add_argument('--self_consistent_n', type=int, required=False, default=1)
     parser.add_argument('--db_dir', type=str, required=False, default='./home/data/spider_data/test_database')
+    parser.add_argument('--save_segment_len', type=int, required=False, default=0)
+    parser.add_argument('--start_offset', type=int, required=False, default=1, help="start from 1")
 
     args = parser.parse_args()
+    if args.start_offset < 1:
+        print("start_offset need to start from 1")
+        exit()
+    args.start_offset = args.start_offset - 1
     infer(args)
